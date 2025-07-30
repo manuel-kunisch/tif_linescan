@@ -234,6 +234,9 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.stack: np.ndarray | None = None        # (C, Y, X)
         self.stack_original: np.ndarray | None = None        # (C, Y, X)
         self.current_channel = 0
+        # --- z-stack support ---------------------------------------------
+        self.z_size: int = 1  # number of z planes
+        self.z_index: int = 0  # active z index
 
         self.saver: LineScanPlotSaver | None = None  # for saving line scan plots
 
@@ -441,11 +444,11 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.stack = self.stack_original.copy()  # keep original for later use
         self.channel_spin.setMaximum(self.stack.shape[0] - 1)
 
-        self.current_channel = 0
 
-        # --- z-stack support ---------------------------------------------
-        self.z_size: int = 1  # number of z planes
+        self.current_channel = 0
+        self.channel_spin.setValue(self.current_channel)
         self.z_index: int = 0  # active z
+        self.z_slider.setValue(self.z_index)
 
         self.display_current_channel()
         self.image_view.autoRange()
@@ -703,7 +706,7 @@ class LineScanApp(QtWidgets.QMainWindow):
 
         if self.normalize_cb.isChecked():
             # normalize each channel independently
-            max_vals = np.max(self.stack, axis=(1,2), keepdims=True)
+            max_vals = np.max(self.stack, axis=(2,3), keepdims=True)
             normalized = self.stack / max_vals
             self.stack = normalized.astype(np.float32)
         else:
@@ -735,31 +738,22 @@ class LineScanApp(QtWidgets.QMainWindow):
         # ----- preserve original -------------------------------------
         self.stack_original = self.stack.copy()
 
-        if self.stack.ndim == 3:            # -------- 3‑D (C,Y,X) -----
-            ref   = self.stack[0]
-            aligned = [ref]
-            for ch in range(1, self.stack.shape[0]):
-                moving = self.stack[ch]
+
+        z_aligned = []
+        n_ch = self.stack.shape[1]
+        for z in range(self.z_size):
+            ref = self.stack[z, 0]
+            aligned_ch = [ref]
+            for ch in range(1, n_ch):
+                moving = self.stack[z, ch]
                 lo, hi = moving.min(), moving.max()
                 shift, *_ = phase_cross_correlation(ref, moving, upsample_factor=10)
                 moved = np.real(np.fft.ifftn(fourier_shift(np.fft.fftn(moving), shift)))
-                aligned.append(np.clip(moved, lo, hi))
-            self.stack = np.stack(aligned, axis=0)
-
-        else:                               # -------- 4‑D (Z,C,Y,X) ---
-            z_aligned = []
-            n_ch = self.stack.shape[1]
-            for z in range(self.z_size):
-                ref = self.stack[z, 0]
-                aligned_ch = [ref]
-                for ch in range(1, n_ch):
-                    moving = self.stack[z, ch]
-                    lo, hi = moving.min(), moving.max()
-                    shift, *_ = phase_cross_correlation(ref, moving, upsample_factor=10)
-                    moved = np.real(np.fft.ifftn(fourier_shift(np.fft.fftn(moving), shift)))
-                    aligned_ch.append(np.clip(moved, lo, hi))
-                z_aligned.append(np.stack(aligned_ch, axis=0))
-            self.stack = np.stack(z_aligned, axis=0)
+                aligned_ch.append(np.clip(moved, lo, hi))
+            z_aligned.append(np.stack(aligned_ch, axis=0))
+            print(f"{z=}: aligned {len(aligned_ch)} channels with shifts {shift}")
+        # ----- stack aligned channels --------------------------------
+        self.stack = np.stack(z_aligned, axis=0)
 
         # ----- refresh view ------------------------------------------
         self.update_display()

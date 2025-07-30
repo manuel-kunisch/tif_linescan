@@ -12,5 +12,5 @@ def main(file_path):
 
 
 if __name__ == "__main__":
-    main('data/composite_zscan_green_ao_commandmatrix_red_pifoc_with_scalebar.tif')
+    main('test')
 

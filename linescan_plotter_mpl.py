@@ -47,12 +47,8 @@ class LineScanPlotSaver(QtWidgets.QDialog):
         self.pixel_size_um = pixel_size_um
         self.channel = 0
         # --- z‑stack support ------------------------------------------------
-        if self.stack.ndim == 4:          # (Z, C, Y, X)
-            self.z_size = self.stack.shape[0]
-            self.z_index = 0
-        else:                             # keep backward‑compat
-            self.z_size = 1
-            self.z_index = 0
+        self.z_size = self.stack.shape[0]
+        self.z_index = 0
         self.scalebar_um = 50.0
         self.cmap = 'gnuplot'
         self.line_colors = line_colors if line_colors else ["white"] * self.stack.shape[0]
@@ -85,7 +81,7 @@ class LineScanPlotSaver(QtWidgets.QDialog):
 
         # Channel selector
         self.channel_selector = QtWidgets.QSpinBox()
-        self.channel_selector.setMaximum(self.stack.shape[0] - 1)
+        self.channel_selector.setMaximum(self.stack.shape[1] - 1)
         self.channel_selector.setPrefix("Channel ")
         self.channel_selector.valueChanged.connect(self._on_channel_changed)
         controls.addWidget(self.channel_selector, 0, 0, 1, 2)
@@ -344,7 +340,7 @@ class LineScanPlotSaver(QtWidgets.QDialog):
         original_channel = self.channel
         original_cmap = self.cmap
 
-        for ch in range(self.stack.shape[0]):
+        for ch in range(self.stack.shape[1]):
             self.channel = ch
             line_color = self.line_colors[ch]
             mapped_cmap = COLOR_TO_CMAP.get(line_color, 'gray')
