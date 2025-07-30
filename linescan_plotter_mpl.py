@@ -29,6 +29,9 @@ COLOR_TO_CMAP = {
 }
 
 class LineScanPlotSaver(QtWidgets.QDialog):
+    """
+    A dialog for saving line scan plots with matplotlib with various customization options.
+    """
     def __init__(self, image_stack: np.ndarray, roi: pg.LineSegmentROI,
                  profile_coords: List[np.ndarray], pixel_size_um: float = 1.0,
                  line_colors: List[str] = None,

@@ -18,31 +18,124 @@ pip install pyqt5 pyqtgraph matplotlib tifffile scikit-image numpy
 Run it with `python linescan_app.py`.
 """
 
+import json
 import sys
+from functools import partial
 from pathlib import Path
 from typing import List, Tuple
 
-from PyQt6.QtCore import QPoint, QPointF
-from ome_types import from_xml
 import numpy as np
-import tifffile as tiff
-from skimage.measure import profile_line
-
-from PyQt6 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
-from pyqtgraph.exporters import ImageExporter
+import tifffile as tiff
+from PyQt6 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from skimage.registration import phase_cross_correlation
+from pyqtgraph.exporters import ImageExporter
 from scipy.ndimage import fourier_shift
+from skimage.registration import phase_cross_correlation
 
 from linescan_plotter_mpl import LineScanPlotSaver
-from scalebar import ScaleBar
-
 # --------------------------------------------------------------------------------------
 #  PhysicalUnitsImageView  (the user already has this class; we re‑import if available)
 # --------------------------------------------------------------------------------------
 from physical_units_image_view import PhysicalUnitsImageView  # type: ignore
+from scalebar import ScaleBar
+
+
+tab_to_hex = {"tab:blue" : "#1f77b4",
+                "tab:orange" : "#ff7f0e",
+                "tab:green" : "#2ca02c",
+                "tab:red" : "#d62728",
+                "tab:purple" : "#9467bd",
+                "tab:brown" : "#8c564b",
+                "tab:pink" : "#e377c2",
+                "tab:gray" : "#7f7f7f",
+                "tab:olive" : "#bcbd22",
+                "tab:cyan" : "#17becf"}
+# --------------------------------------------------------------------------------------
+#  ChannelColorDialog
+# --------------------------------------------------------------------------------------
+class ChannelColorDialog(QtWidgets.QDialog):
+    """
+    Small dialog that lets the user pick a Matplotlib / Qt colour
+    for every channel and optionally save/load presets (JSON).
+    """
+    def __init__(self, colours: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Channel colours")
+        self.resize(300, 200)
+        self._colours = list(colours)       # copy *as a list*
+
+        layout = QtWidgets.QGridLayout(self)
+
+        # channel colour pickers
+        for i, col in enumerate(self._colours):
+            btn = QtWidgets.QPushButton()
+            qcol = QtGui.QColor(col)
+            if col.startswith("tab:"):
+                # remove the 'tab:' prefix for PyQt6 compatibility
+                qcol = QtGui.QColor(tab_to_hex.get(col, col[4:]))
+            btn.setStyleSheet(f"background-color:{qcol.name()};")
+            btn.clicked.connect(partial(self.pick_colour, i, btn))
+            layout.addWidget(QtWidgets.QLabel(f"Ch {i}"), i, 0)
+            layout.addWidget(btn, i, 1)
+
+        # save / load preset buttons
+        btn_save = QtWidgets.QPushButton("Save preset")
+        btn_load = QtWidgets.QPushButton("Load preset")
+        btn_save.clicked.connect(self.save_preset)
+        btn_load.clicked.connect(self.load_preset)
+        layout.addWidget(btn_save, len(self._colours), 0)
+        layout.addWidget(btn_load, len(self._colours), 1)
+
+        # OK / Cancel buttons (works for both PyQt6 & PyQt5)
+        try:
+            std = QtWidgets.QDialogButtonBox.StandardButton
+            bb = QtWidgets.QDialogButtonBox(std.Ok | std.Cancel)
+        except AttributeError:
+            # older PyQt5 / PySide2
+            bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok |
+                                            QtWidgets.QDialogButtonBox.Cancel)
+
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        layout.addWidget(bb, len(self._colours) + 1, 0, 1, 2)
+
+    # ------------------------------------------------------------------
+    def pick_colour(self, idx: int, btn: QtWidgets.QPushButton):
+        colour = QtWidgets.QColorDialog.getColor(QtGui.QColor(self._colours[idx]), self)
+        if colour.isValid():
+            self._colours[idx] = colour.name()
+            btn.setStyleSheet(f"background-color:{colour.name()};")
+
+    def save_preset(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save preset", "colours.json", "JSON (*.json)")
+        if path:
+            with open(path, "w") as fh:
+                json.dump(self._colours, fh)
+            QtWidgets.QMessageBox.information(self, "Saved", f"Preset saved to {path}")
+
+    def load_preset(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load preset", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+            if isinstance(data, list) and len(data) >= len(self._colours):
+                self._colours = data[:len(self._colours)]
+                # update button styles
+                for row in range(len(self._colours)):
+                    btn: QtWidgets.QPushButton = self.layout().itemAtPosition(row, 1).widget()
+                    btn.setStyleSheet(f"background:{self._colours[row]}")
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Error", str(e))
+
+    # ------------------------------------------------------------------
+    def colours(self) -> list[str]:
+        return self._colours
 
 
 #  Matplotlib canvas
@@ -115,7 +208,7 @@ class LineScanApp(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Multi‑channel Line‑Scan Viewer")
-        # self.resize(1200, 700)
+        self.resize(1200, 500)
 
         # central splitter --------------------------------------------------
         splitter = QtWidgets.QSplitter()
@@ -216,12 +309,30 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.normalize_cb.stateChanged.connect(lambda x: self.normalize_channels(x))
         tb.addWidget(self.normalize_cb)
 
+
+        tb.addSeparator()
+        self.correlate_cb = QtWidgets.QCheckBox("Correlate channels")
+        self.correlate_cb.setChecked(False)
+        self.correlate_cb.stateChanged.connect(lambda x: self.correlate_channels(x))
+        tb.addWidget(self.correlate_cb)
+
+        tb.addSeparator()
+        # add action to change channel names
+        change_labels_act = QtGui.QAction("Change Channel Labels", self)
+        change_labels_act.triggered.connect(self.change_channel_labels)
+        tb.addAction(change_labels_act)
+
+        colour_act = QtGui.QAction("Channel Colours", self)
+        colour_act.triggered.connect(self.open_channel_colour_dialog)
+        tb.addAction(colour_act)
+
         tb.addSeparator()
         # add check to either show default or channel specific colormaps
         self.channel_colormap_cb = QtWidgets.QCheckBox("Use channel colormaps")
         self.channel_colormap_cb.setChecked(False)
         self.channel_colormap_cb.stateChanged.connect(lambda check: self.change_channel(self.current_channel))
         tb.addWidget(self.channel_colormap_cb)
+
 
         tb.addSeparator()
         # add a show composite checkbox
@@ -247,18 +358,7 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.scalebar_spin.valueChanged.connect(self.update_scalebar)
         tb.addWidget(self.scalebar_spin)
 
-        tb.addSeparator()
 
-        self.correlate_cb = QtWidgets.QCheckBox("Correlate channels")
-        self.correlate_cb.setChecked(False)
-        self.correlate_cb.stateChanged.connect(lambda x: self.correlate_channels(x))
-        tb.addWidget(self.correlate_cb)
-
-        tb.addSeparator()
-        # add action to change channel names
-        change_labels_act = QtGui.QAction("Change Channel Labels", self)
-        change_labels_act.triggered.connect(self.change_channel_labels)
-        tb.addAction(change_labels_act)
 
 
     # ------------------------------------------------------------------
@@ -303,6 +403,8 @@ class LineScanApp(QtWidgets.QMainWindow):
         h, w = self.stack.shape[1:]  # Y, X after (C, Y, X)
 
         self.update_profile()
+        self.profile_canvas.figure.tight_layout()
+        self.profile_canvas.draw()
 
     def change_channel(self, idx: int):
         self.current_channel = idx
@@ -645,6 +747,26 @@ class LineScanApp(QtWidgets.QMainWindow):
         # update the profile canvas labels
         self.profile_canvas.ax.legend(self.profile_canvas.labels)
         self.profile_canvas.draw_idle()
+
+
+    def open_channel_colour_dialog(self):
+        dlg = ChannelColorDialog(self.profile_canvas.colours, self)
+        result = dlg.exec()
+        try:
+            accepted_code = QtWidgets.QDialog.DialogCode.Accepted  # PyQt6 / PySide6
+        except AttributeError:
+            accepted_code = QtWidgets.QDialog.Accepted             # PyQt5 / PySide2
+
+        if result == accepted_code:
+            # update colours
+            self.profile_canvas.colours = dlg.colours()
+            # trigger plot and image refresh
+            if self.stack is not None:
+                self.profile_canvas.ax.legend(self.profile_canvas.labels or
+                                              [f"Ch {i}" for i in range(self.stack.shape[0])],
+                                              prop={'size': 10})
+                self.update_display()
+                self.update_profile()
 
     def update_units(self, state: int):
         self.profile_canvas.ax.set_xlabel("Distance (µm)" if state else "Distance (px)")
