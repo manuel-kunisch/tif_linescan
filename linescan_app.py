@@ -273,6 +273,20 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.channel_spin.valueChanged.connect(self.change_channel)
         tb.addWidget(self.channel_spin)
 
+        # after the channel spin-box
+        self.z_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.z_slider.setEnabled(False)
+        self.z_spin = QtWidgets.QSpinBox()
+        self.z_spin.setEnabled(False)
+
+        self.z_slider.valueChanged.connect(self._on_z_slider)
+        self.z_spin.valueChanged.connect(self._on_z_spin)
+
+        tb.addSeparator()
+        tb.addWidget(QtWidgets.QLabel("Z:"))
+        tb.addWidget(self.z_slider)
+        tb.addWidget(self.z_spin)
+
         tb.addSeparator()
         # field of view / pixel size inputs
         self.fov_w_edit = QtWidgets.QDoubleSpinBox()
@@ -358,22 +372,44 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.scalebar_spin.valueChanged.connect(self.update_scalebar)
         tb.addWidget(self.scalebar_spin)
 
+    def _on_z_slider(self, val):
+        if val != self.z_index:
+            self.z_index = val
+            self.z_spin.blockSignals(True);
+            self.z_spin.setValue(val);
+            self.z_spin.blockSignals(False)
+            self.update_display();
+            self.update_profile()
 
-
+    def _on_z_spin(self, val):
+        if val != self.z_index:
+            self.z_index = val
+            self.z_slider.blockSignals(True);
+            self.z_slider.setValue(val);
+            self.z_slider.blockSignals(False)
+            self.update_display();
+            self.update_profile()
 
     # ------------------------------------------------------------------
     #  Slots
     # ------------------------------------------------------------------
     def load_image(self):
+        """
+        Returns the 4d image stack from a TIFF file.
+        Order is (Z, C, Y, X) depending on the file.
+        :return:
+        """
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open TIFF", "", "TIFF files (*.tif *.tiff)")
         if not path:
             return
         img = tiff.imread(path)
-        if img.ndim == 2:
-            img = img[None, ...]          # (1, Y, X)
-        elif img.ndim == 3 and img.shape[0] > 5:
-            # might be (Z, Y, X) but we need channels first; treat as 1‑channel for now
-            img = img[:1]
+        if img.ndim == 2:  # → (1,1,Y,X)
+            img = img[None, None, ...]
+        elif img.ndim == 3:  # (C,Y,X) → (1,C,Y,X)
+            img = img[None, ...]
+        elif img.ndim != 4:  # anything else = error
+            QtWidgets.QMessageBox.warning(self, "Error", "Unsupported dimensionality")
+            return
         # get fiji metadata such as label, pixel size, etc.
         with tiff.TiffFile(path) as tif:
             if hasattr(tif, "pages") and tif.pages:
@@ -386,21 +422,33 @@ class LineScanApp(QtWidgets.QMainWindow):
                     if "PixelSize" in tags:
                         pixel_size = tags["PixelSize"].value
                         print(f"Pixel size: {pixel_size}")
-
-                label = tif.imagej_metadata['Labels']
-                print(len(label), "labels found in metadata")
-                # split each string after the \n separator and only keep the first part
-                self.profile_canvas.labels = [l.split('\n')[0] for l in label]
+                print(f'{tif.imagej_metadata.keys()=}')
+                try:
+                    label = tif.imagej_metadata['Labels']
+                    print(len(label), "labels found in metadata")
+                    # split each string after the \n separator and only keep the first part
+                    self.profile_canvas.labels = [l.split('\n')[0] for l in label]
+                except KeyError:
+                    print("No labels found in metadata")
 
         # shape: (C, Y, X)
         self.stack_original = img.astype(np.uint16)
+        self.z_size = img.shape[0]
+        self.z_slider.setMaximum(self.z_size - 1)
+        self.z_spin.setMaximum(self.z_size - 1)
+        self.z_slider.setEnabled(self.z_size > 1)
+        self.z_spin.setEnabled(self.z_size > 1)
         self.stack = self.stack_original.copy()  # keep original for later use
         self.channel_spin.setMaximum(self.stack.shape[0] - 1)
+
         self.current_channel = 0
+
+        # --- z-stack support ---------------------------------------------
+        self.z_size: int = 1  # number of z planes
+        self.z_index: int = 0  # active z
+
         self.display_current_channel()
         self.image_view.autoRange()
-        # --- create a fresh ROI inside the current image --------------
-        h, w = self.stack.shape[1:]  # Y, X after (C, Y, X)
 
         self.update_profile()
         self.profile_canvas.figure.tight_layout()
@@ -433,7 +481,7 @@ class LineScanApp(QtWidgets.QMainWindow):
 
             composite = np.zeros((self.stack.shape[1], self.stack.shape[2], 3), dtype=np.float32)
             for c in range(self.stack.shape[0]):
-                ch_img = self.stack[c].astype(np.float32)
+                ch_img = (self.stack[self.z_index, c] if self.stack.ndim == 4 else self.stack[c]).astype(np.float32)
                 ch_img = (ch_img - ch_img.min()) / (np.ptp(ch_img) + np.finfo(float).eps)
                 color = self.profile_canvas.colours[c % len(self.profile_canvas.colours)]
                 if color.startswith("tab:"):
@@ -550,7 +598,10 @@ class LineScanApp(QtWidgets.QMainWindow):
     def display_current_channel(self):
         if self.stack is None:
             return
-        ch_img = self.stack[self.current_channel]
+        if self.stack.ndim == 4:
+            ch_img = self.stack[self.z_index, self.current_channel]
+        else:
+            ch_img = self.stack[self.current_channel]
         self.image_view.setImage(ch_img, autoLevels=True)   # transpose: pg uses (X,Y)
 
     def update_display(self):
@@ -613,8 +664,10 @@ class LineScanApp(QtWidgets.QMainWindow):
         profiles = []
 
         # reopen the array exactly as used for display ---------------------------
-        view_arrs = [ch.T for ch in self.stack]  # list of (X,Y) arrays
-
+        if self.stack.ndim == 4:
+            view_arrs = [self.stack[self.z_index, c].T for c in range(self.stack.shape[1])]
+        else:
+            view_arrs = [ch.T for ch in self.stack]
         # reference to the ImageItem you passed those arrays to
         img_item = self.image_view.imageItem
 
@@ -660,38 +713,57 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.update_display()
         self.update_profile()  # re-compute profile with normalized data
 
-    def correlate_channels(self, state=True):
+    # ------------------------------------------------------------------
+    def correlate_channels(self, state: bool = True):
         """
-        Align all channels to channel 0 using FFT-based cross-correlation.
+        Align every channel to channel‑0 using FFT phase correlation.
+
+        * Works with 3‑D stacks  (C, Y, X)
+        * and with 4‑D stacks   (Z, C, Y, X)
+        * Sub‑pixel shifts via scipy fourier_shift
         """
-        if state:
-            if self.stack is None:
-                return
+        if self.stack is None:
+            return
 
-            self.stack_original = self.stack.copy()
-            ref = self.stack[0]
-            aligned_stack = [ref]  # keep channel 0 as-is
+        if not state:                       # restore original
+            if self.stack_original is not None:
+                self.stack = self.stack_original.copy()
+                self.update_display()
+                self.update_profile()
+            return
 
+        # ----- preserve original -------------------------------------
+        self.stack_original = self.stack.copy()
+
+        if self.stack.ndim == 3:            # -------- 3‑D (C,Y,X) -----
+            ref   = self.stack[0]
+            aligned = [ref]
             for ch in range(1, self.stack.shape[0]):
-                min0, max0 = np.min(self.stack[ch]), np.max(self.stack[ch])
-                shift, error, _ = phase_cross_correlation(ref, self.stack[ch], upsample_factor=10)
-                print(f"Channel {ch} → shift: {shift}, error: {error}")
+                moving = self.stack[ch]
+                lo, hi = moving.min(), moving.max()
+                shift, *_ = phase_cross_correlation(ref, moving, upsample_factor=10)
+                moved = np.real(np.fft.ifftn(fourier_shift(np.fft.fftn(moving), shift)))
+                aligned.append(np.clip(moved, lo, hi))
+            self.stack = np.stack(aligned, axis=0)
 
-                # Apply subpixel shift in Fourier domain to enable subpixel alignment
-                offset_img = np.real(np.fft.ifftn(
-                    fourier_shift(np.fft.fftn(self.stack[ch]), shift)
-                ))
-                # Clip to original min/max values, kill negative values from the FFT
-                offset_img = np.clip(offset_img, min0, max0)
-                aligned_stack.append(offset_img)
+        else:                               # -------- 4‑D (Z,C,Y,X) ---
+            z_aligned = []
+            n_ch = self.stack.shape[1]
+            for z in range(self.z_size):
+                ref = self.stack[z, 0]
+                aligned_ch = [ref]
+                for ch in range(1, n_ch):
+                    moving = self.stack[z, ch]
+                    lo, hi = moving.min(), moving.max()
+                    shift, *_ = phase_cross_correlation(ref, moving, upsample_factor=10)
+                    moved = np.real(np.fft.ifftn(fourier_shift(np.fft.fftn(moving), shift)))
+                    aligned_ch.append(np.clip(moved, lo, hi))
+                z_aligned.append(np.stack(aligned_ch, axis=0))
+            self.stack = np.stack(z_aligned, axis=0)
 
-            self.stack = np.stack(aligned_stack)
-            self.update_display()
-            self.update_profile()
-        else:
-            self.stack = self.stack_original.copy()
-            self.update_display()
-            self.update_profile()
+        # ----- refresh view ------------------------------------------
+        self.update_display()
+        self.update_profile()
 
     def change_channel_labels(self):
         """

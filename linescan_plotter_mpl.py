@@ -7,6 +7,7 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
+from functools import partial
 
 COLOR_TO_CMAP = {
     "tab:red": "Reds_r",
@@ -45,6 +46,13 @@ class LineScanPlotSaver(QtWidgets.QDialog):
         self.coords = profile_coords
         self.pixel_size_um = pixel_size_um
         self.channel = 0
+        # --- z‑stack support ------------------------------------------------
+        if self.stack.ndim == 4:          # (Z, C, Y, X)
+            self.z_size = self.stack.shape[0]
+            self.z_index = 0
+        else:                             # keep backward‑compat
+            self.z_size = 1
+            self.z_index = 0
         self.scalebar_um = 50.0
         self.cmap = 'gnuplot'
         self.line_colors = line_colors if line_colors else ["white"] * self.stack.shape[0]
@@ -81,6 +89,20 @@ class LineScanPlotSaver(QtWidgets.QDialog):
         self.channel_selector.setPrefix("Channel ")
         self.channel_selector.valueChanged.connect(self._on_channel_changed)
         controls.addWidget(self.channel_selector, 0, 0, 1, 2)
+
+        # Z‑slice selector (only visible for 4‑D stacks)
+        if self.z_size > 1:
+            self.z_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            self.z_slider.setMinimum(0)
+            self.z_slider.setMaximum(self.z_size - 1)
+            self.z_slider.valueChanged.connect(self._on_z_slider)
+            controls.addWidget(QtWidgets.QLabel("Z:"), 0, 2)
+            controls.addWidget(self.z_slider, 0, 3)
+
+            self.z_spin = QtWidgets.QSpinBox()
+            self.z_spin.setRange(0, self.z_size - 1)
+            self.z_spin.valueChanged.connect(self._on_z_spin)
+            controls.addWidget(self.z_spin, 0, 4)
 
         # Scalebar size
         self.scalebar_input = QtWidgets.QDoubleSpinBox()
@@ -177,6 +199,20 @@ class LineScanPlotSaver(QtWidgets.QDialog):
         self.channel = val
         self._update_plot()
 
+    def _on_z_slider(self, val):
+        self.z_index = val
+        self.z_spin.blockSignals(True)
+        self.z_spin.setValue(val)
+        self.z_spin.blockSignals(False)
+        self._update_plot()
+
+    def _on_z_spin(self, val):
+        self.z_index = val
+        self.z_slider.blockSignals(True)
+        self.z_slider.setValue(val)
+        self.z_slider.blockSignals(False)
+        self._update_plot()
+
     def _on_scalebar_changed(self, val):
         self.scalebar_um = val
         self._update_plot()
@@ -251,7 +287,10 @@ class LineScanPlotSaver(QtWidgets.QDialog):
 
     def _update_plot(self):
         self.ax.clear()
-        img = self.stack[self.channel]
+        if self.stack.ndim == 4:
+            img = self.stack[self.z_index, self.channel]
+        else:
+            img = self.stack[self.channel]
         # update vmin/vmax sliders/spins if needed
         if self.vmin is None or self.vmax is None:
             self.vmin, self.vmax = float(img.min()), float(img.max())
