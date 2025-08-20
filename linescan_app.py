@@ -246,6 +246,16 @@ class LineScanApp(QtWidgets.QMainWindow):
 
         # toolbar -----------------------------------------------------------
         self._build_toolbar()
+
+        self.setAcceptDrops(True)   # allow drag & drop of TIFF files
+
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            if file_path.lower().endswith(('.tif', '.tiff')):
+                self.load_image_from_path(file_path)
+                break
+
     # ------------------------------------------------------------------
     #  UI helpers
     # ------------------------------------------------------------------
@@ -396,19 +406,13 @@ class LineScanApp(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------
     #  Slots
     # ------------------------------------------------------------------
-    def load_image(self):
-        """
-        Returns the 4d image stack from a TIFF file.
-        Order is (Z, C, Y, X) depending on the file.
-        :return:
-        """
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open TIFF", "", "TIFF files (*.tif *.tiff)")
-        if not path:
-            return
+    def load_image_from_path(self, path):
         img = tiff.imread(path)
+        print(f"Loading image from {path}, shape: {img.shape}")
         if img.ndim == 2:  # → (1,1,Y,X)
             img = img[None, None, ...]
         elif img.ndim == 3:  # (C,Y,X) → (1,C,Y,X)
+            # add a new axis for Z even if there is only one Z plane
             img = img[None, ...]
         elif img.ndim != 4:  # anything else = error
             QtWidgets.QMessageBox.warning(self, "Error", "Unsupported dimensionality")
@@ -442,8 +446,7 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.z_slider.setEnabled(self.z_size > 1)
         self.z_spin.setEnabled(self.z_size > 1)
         self.stack = self.stack_original.copy()  # keep original for later use
-        self.channel_spin.setMaximum(self.stack.shape[0] - 1)
-
+        self.channel_spin.setMaximum(self.stack.shape[1] - 1)
 
         self.current_channel = 0
         self.channel_spin.setValue(self.current_channel)
@@ -456,6 +459,20 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.update_profile()
         self.profile_canvas.figure.tight_layout()
         self.profile_canvas.draw()
+
+        print(f"✅ Loaded image from {path}, image shape: {self.stack.shape}")
+
+
+    def load_image(self):
+        """
+        Returns the 4d image stack from a TIFF file.
+        Order is (Z, C, Y, X) depending on the file.
+        :return:
+        """
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open TIFF", "", "TIFF files (*.tif *.tiff)")
+        if not path:
+            return
+        self.load_image_from_path(path)
 
     def change_channel(self, idx: int):
         self.current_channel = idx
@@ -836,7 +853,6 @@ class LineScanApp(QtWidgets.QMainWindow):
 
     def update_units(self, state: int):
         self.profile_canvas.ax.set_xlabel("Distance (µm)" if state else "Distance (px)")
-
 
 
 # --------------------------------------------------------------------------------------
