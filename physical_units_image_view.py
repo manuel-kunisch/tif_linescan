@@ -1,9 +1,9 @@
 import numpy as np
 import pyqtgraph as pg
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 import logging
 
-from PyQt6.QtCore import QPointF
+from PyQt5.QtCore import QPointF
 from scipy.ndimage import zoom
 
 logger = logging.getLogger(__name__)

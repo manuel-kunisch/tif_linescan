@@ -3,7 +3,7 @@ from typing import List, Tuple
 import pyqtgraph as pg
 import matplotlib.pyplot as plt
 
-from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle

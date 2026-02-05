@@ -27,7 +27,7 @@ from typing import List, Tuple
 import numpy as np
 import pyqtgraph as pg
 import tifffile as tiff
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from pyqtgraph.exporters import ImageExporter
@@ -233,6 +233,7 @@ class LineScanApp(QtWidgets.QMainWindow):
         # data holders ------------------------------------------------------
         self.stack: np.ndarray | None = None        # (C, Y, X)
         self.stack_original: np.ndarray | None = None        # (C, Y, X)
+        self.stack_aligned: np.ndarray | None = None         # (C, Y, X)
         self.current_channel = 0
         # --- z-stack support ---------------------------------------------
         self.z_size: int = 1  # number of z planes
@@ -262,17 +263,17 @@ class LineScanApp(QtWidgets.QMainWindow):
     def _build_toolbar(self):
         tb = self.addToolBar("Main")
 
-        # load image
-        load_act = QtGui.QAction("Load Image", self)
+        # load image action
+        load_act = QtWidgets.QAction("Load Image", self)
         load_act.triggered.connect(self.load_image)
         tb.addAction(load_act)
 
         # save plot
-        save_act = QtGui.QAction("Save Profile", self)
+        save_act = QtWidgets.QAction("Save Profile", self)
         save_act.triggered.connect(self.save_profile)
         tb.addAction(save_act)
 
-        save_linescan_act = QtGui.QAction("Save Linescan", self)
+        save_linescan_act = QtWidgets.QAction("Save Linescan", self)
         save_linescan_act.triggered.connect(self.save_plot)
         tb.addAction(save_linescan_act)
 
@@ -312,7 +313,7 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.fov_h_edit.setSuffix(" µm  FOV‑H")
         self.fov_h_edit.setMaximum(np.inf)
         self.fov_h_edit.setValue(397)
-        apply_fov = QtGui.QAction("Apply FOV", self)
+        apply_fov = QtWidgets.QAction("Apply FOV", self)
         apply_fov.triggered.connect(self.apply_fov)
         self.apply_fov()  # initial FOV application
 
@@ -335,47 +336,50 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.normalize_cb.setChecked(False)
         self.normalize_cb.stateChanged.connect(lambda x: self.normalize_channels(x))
         tb.addWidget(self.normalize_cb)
+        
+        self.addToolBarBreak()
+        
+        # 2. Create a NEW toolbar instance
+        tb2 = self.addToolBar("Analysis") 
+        # --- TOOLBAR ROW 2: Analysis & Display ---
 
-
-        tb.addSeparator()
         self.correlate_cb = QtWidgets.QCheckBox("Correlate channels")
         self.correlate_cb.setChecked(False)
         self.correlate_cb.stateChanged.connect(lambda x: self.correlate_channels(x))
-        tb.addWidget(self.correlate_cb)
+        tb2.addWidget(self.correlate_cb)  # Note: Adding to tb2 now!
 
-        tb.addSeparator()
+        tb2.addSeparator()
         # add action to change channel names
-        change_labels_act = QtGui.QAction("Change Channel Labels", self)
+        change_labels_act = QtWidgets.QAction("Change Labels", self)
         change_labels_act.triggered.connect(self.change_channel_labels)
-        tb.addAction(change_labels_act)
+        tb2.addAction(change_labels_act)
 
-        colour_act = QtGui.QAction("Channel Colours", self)
+        colour_act = QtWidgets.QAction("Channel Colours", self)
         colour_act.triggered.connect(self.open_channel_colour_dialog)
-        tb.addAction(colour_act)
+        tb2.addAction(colour_act)
 
-        tb.addSeparator()
+        tb2.addSeparator()
         # add check to either show default or channel specific colormaps
         self.channel_colormap_cb = QtWidgets.QCheckBox("Use channel colormaps")
         self.channel_colormap_cb.setChecked(False)
         self.channel_colormap_cb.stateChanged.connect(lambda check: self.change_channel(self.current_channel))
-        tb.addWidget(self.channel_colormap_cb)
+        tb2.addWidget(self.channel_colormap_cb)
 
-
-        tb.addSeparator()
+        tb2.addSeparator()
         # add a show composite checkbox
         self.show_composite_cb = QtWidgets.QCheckBox("Show composite")
         self.show_composite_cb.setChecked(False)
         self.show_composite_cb.stateChanged.connect(lambda x: self.show_composite(x))
-        tb.addWidget(self.show_composite_cb)
+        tb2.addWidget(self.show_composite_cb)
 
+        tb2.addSeparator()
         # --- scalebar controls -------------------------------------------
         self.scalebar_cb = QtWidgets.QCheckBox("Show scalebar")
         self.scalebar_cb.setChecked(self.scalebar_visible)
         self.scalebar_cb.stateChanged.connect(lambda s: setattr(self, "scalebar_visible", bool(s)))
         self.scalebar_cb.stateChanged.connect(self.update_scalebar)
-        tb.addWidget(self.scalebar_cb)
-        self.update_scalebar()
-
+        tb2.addWidget(self.scalebar_cb)
+        
         self.scalebar_spin = QtWidgets.QDoubleSpinBox()
         self.scalebar_spin.setSuffix(" µm")
         self.scalebar_spin.setDecimals(1)
@@ -383,7 +387,10 @@ class LineScanApp(QtWidgets.QMainWindow):
         self.scalebar_spin.setValue(self.scalebar_length_um)
         self.scalebar_spin.valueChanged.connect(lambda v: setattr(self, "scalebar_length_um", v))
         self.scalebar_spin.valueChanged.connect(self.update_scalebar)
-        tb.addWidget(self.scalebar_spin)
+        tb2.addWidget(self.scalebar_spin)
+        
+        # Ensure scalebar is updated initially
+        self.update_scalebar()
 
     def _on_z_slider(self, val):
         if val != self.z_index:
@@ -440,6 +447,7 @@ class LineScanApp(QtWidgets.QMainWindow):
 
         # shape: (C, Y, X)
         self.stack_original = img.astype(np.uint16)
+        self.stack_aligned = None   # reset aligned stack when loading a new image
         self.z_size = img.shape[0]
         self.z_slider.setMaximum(self.z_size - 1)
         self.z_spin.setMaximum(self.z_size - 1)
@@ -493,33 +501,98 @@ class LineScanApp(QtWidgets.QMainWindow):
             # (or any other default colormap you prefer)
             self.image_view.setColorMap(pg.colormap.getFromMatplotlib('viridis'))  # default fire colormap
 
+    def refresh_data_pipeline(self):
+        """
+        Reconstructs self.stack based on the current state of checkboxes.
+        Order: Raw -> (Optional Correlation) -> (Optional Normalization) -> Display
+        """
+        if self.stack_original is None:
+            return
+
+        # 1. Choose the base (Aligned or Original)
+        if self.correlate_cb.isChecked() and self.stack_aligned is not None:
+            current_stack = self.stack_aligned.copy()
+        else:
+            current_stack = self.stack_original.copy()
+
+        # 2. Apply Normalization if needed
+        if self.normalize_cb.isChecked():
+            # Normalize to 0-1
+            # Avoid division by zero
+            max_vals = np.max(current_stack, axis=(current_stack.ndim - 2, current_stack.ndim - 1), keepdims=True)
+            # Replace 0s with 1s to avoid div by zero warnings
+            max_vals[max_vals == 0] = 1
+            current_stack = current_stack.astype(np.float32) / max_vals
+
+        # 3. Update the main stack and display
+        self.stack = current_stack
+        self.update_display()
+        self.update_profile()
+        
     def show_composite(self, state=True):
         # show or hide the composite image
         if state:
             # lock the channel spinbox
             self.channel_spin.setEnabled(False)
 
-            composite = np.zeros((self.stack.shape[1], self.stack.shape[2], 3), dtype=np.float32)
-            for c in range(self.stack.shape[0]):
-                ch_img = (self.stack[self.z_index, c] if self.stack.ndim == 4 else self.stack[c]).astype(np.float32)
-                ch_img = (ch_img - ch_img.min()) / (np.ptp(ch_img) + np.finfo(float).eps)
-                color = self.profile_canvas.colours[c % len(self.profile_canvas.colours)]
-                if color.startswith("tab:"):
-                    color = color[4:]
-                color = pg.mkColor(color).getRgbF()[:3]
+        
+            if self.stack.ndim == 4:
+                # Shape: (Z, C, Y, X)
+                n_ch = self.stack.shape[1]
+                h = self.stack.shape[2]
+                w = self.stack.shape[3]
+            else:
+                # Shape: (C, Y, X)
+                n_ch = self.stack.shape[0]
+                h = self.stack.shape[1]
+                w = self.stack.shape[2]
+            
+            # Create composite with correct (Y, X, 3) shape
+            composite = np.zeros((h, w, 3), dtype=np.float32)
+            for c in range(n_ch):
+                # Extract image based on dimensions
+                if self.stack.ndim == 4:
+                    ch_img = self.stack[self.z_index, c]
+                else:
+                    ch_img = self.stack[c]
+                
+                ch_img = ch_img.astype(np.float32)
+
+                # Normalize to 0-1 range safely
+                val_min, val_max = ch_img.min(), ch_img.max()
+                if val_max > val_min:
+                    ch_img = (ch_img - val_min) / (val_max - val_min)
+                else:
+                    ch_img = np.zeros_like(ch_img)
+
+                # Get color
+                color_name = self.profile_canvas.colours[c % len(self.profile_canvas.colours)]
+                
+                # --- FIX: Use the global tab_to_hex dict for accurate colors ---
+                if color_name.startswith("tab:"):
+                    # try looking it up in your dictionary, fallback to stripping 'tab:'
+                    color_name = tab_to_hex.get(color_name, color_name[4:])
+                
+                # Get RGB floats (0.0 - 1.0)
+                rgb = pg.mkColor(color_name).getRgbF()[:3]
+
+                # Add to composite
                 for i in range(3):
-                    composite[..., i] += ch_img * color[i]
+                    composite[..., i] += ch_img * rgb[i]
+
             composite = np.clip(composite, 0, 1)
 
             # directly set image without using ImageView.setImage()
+            # PyQtGraph with row-major expects (Y, X, 3)
             self.image_view.imageItem.setImage(composite)
-            self.image_view.setLevels(0, 1 )  # set levels for the composite image
+            # clear levels so it doesn't try to apply a colormap lookup table
+            self.image_view.imageItem.setLookupTable(None) 
         else:
             self.channel_spin.setEnabled(True)
             # display the current channel image
             self.display_current_channel()
             self.image_view.autoLevels()
-
+            
     def apply_fov(self):
         w = self.fov_w_edit.value()
         h = self.fov_h_edit.value()
@@ -718,8 +791,8 @@ class LineScanApp(QtWidgets.QMainWindow):
 
     def normalize_channels(self, img: np.ndarray) -> np.ndarray:
         """ Normalize all channel data to the maximum of the data set."""
-        if self.stack is None:
-            return img
+        # The state is checked inside refresh_data_pipeline, so we just call it.
+        self.refresh_data_pipeline()
 
         if self.normalize_cb.isChecked():
             # normalize each channel independently
@@ -742,39 +815,62 @@ class LineScanApp(QtWidgets.QMainWindow):
         * and with 4‑D stacks   (Z, C, Y, X)
         * Sub‑pixel shifts via scipy fourier_shift
         """
-        if self.stack is None:
+        if self.stack_original is None:
             return
 
-        if not state:                       # restore original
-            if self.stack_original is not None:
-                self.stack = self.stack_original.copy()
-                self.update_display()
-                self.update_profile()
-            return
+        if state:
+            # If we haven't calculated alignment yet, do it now
+            if self.stack_aligned is None:
+                print("Calculating alignment...")
+                QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+                try:
+                    # Use stack_original as source to avoid accumulating errors
+                    original = self.stack_original
+                    z_aligned = []
+                    
+                    # Handle 4D (Z, C, Y, X) vs 3D (C, Y, X)
+                    is_4d = original.ndim == 4
+                    z_size = original.shape[0] if is_4d else 1
+                    n_ch = original.shape[1] if is_4d else original.shape[0]
 
-        # ----- preserve original -------------------------------------
-        self.stack_original = self.stack.copy()
+                    for z in range(z_size):
+                        # Extract channels for this Z-plane
+                        if is_4d:
+                            channels = [original[z, c] for c in range(n_ch)]
+                        else:
+                            channels = [original[c] for c in range(n_ch)]
+                        
+                        ref = channels[0]
+                        aligned_ch = [ref]
+                        
+                        for i in range(1, n_ch):
+                            moving = channels[i]
+                            # Phase correlation
+                            shift, _, _ = phase_cross_correlation(ref, moving, upsample_factor=10)
+                            
+                            # Apply shift
+                            moved = fourier_shift(np.fft.fftn(moving), shift)
+                            moved = np.real(np.fft.ifftn(moved))
+                            
+                            # Clip to original range
+                            moved = np.clip(moved, moving.min(), moving.max())
+                            aligned_ch.append(moved)
+                        
+                        # Stack channels back together
+                        z_aligned.append(np.stack(aligned_ch, axis=0))
+                    
+                    # Reassemble full stack
+                    if is_4d:
+                        self.stack_aligned = np.stack(z_aligned, axis=0)
+                    else:
+                        self.stack_aligned = z_aligned[0]
+                        
+                    print("Alignment complete.")
+                finally:
+                    QtWidgets.QApplication.restoreOverrideCursor()
 
-
-        z_aligned = []
-        n_ch = self.stack.shape[1]
-        for z in range(self.z_size):
-            ref = self.stack[z, 0]
-            aligned_ch = [ref]
-            for ch in range(1, n_ch):
-                moving = self.stack[z, ch]
-                lo, hi = moving.min(), moving.max()
-                shift, *_ = phase_cross_correlation(ref, moving, upsample_factor=10)
-                moved = np.real(np.fft.ifftn(fourier_shift(np.fft.fftn(moving), shift)))
-                aligned_ch.append(np.clip(moved, lo, hi))
-            z_aligned.append(np.stack(aligned_ch, axis=0))
-            print(f"{z=}: aligned {len(aligned_ch)} channels with shifts {shift}")
-        # ----- stack aligned channels --------------------------------
-        self.stack = np.stack(z_aligned, axis=0)
-
-        # ----- refresh view ------------------------------------------
-        self.update_display()
-        self.update_profile()
+        # Update the view using the pipeline
+        self.refresh_data_pipeline()
 
     def change_channel_labels(self):
         """
